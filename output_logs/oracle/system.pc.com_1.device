@@ -1,0 +1,19 @@
+Linux version 3.4.112 (abulila2@abulila2-OptiPlex-9020) (gcc version 5.5.0 20171010 (Ubuntu 5.5.0-12ubuntu1~16.04) ) #3 SMP Sun Feb 17 10:36:02 CST 2019
+Command line: earlyprintk=ttyS0 console=ttyS0 lpj=7999923 root=/dev/hda1
+CPU: vendor_id 'M5 Simulator' unknown, using generic init.
+CPU: Your system may be unstable.
+BIOS-provided physical RAM map:
+ BIOS-e820: 0000000000000000 - 000000000009fc00 (usable)
+ BIOS-e820: 000000000009fc00 - 0000000000100000 (reserved)
+ BIOS-e820: 0000000000100000 - 0000000020000000 (usable)
+ BIOS-e820: 0000000020000000 - 00000000c0000000 (reserved)
+ BIOS-e820: 00000000ffff0000 - 0000000100000000 (reserved)
+bootconsole [earlyser0] enabled
+NX (Execute Disable) protection: active
+SMBIOS 2.5 present.
+No AGP bridge found
+last_pfn = 0x20000 max_arch_pfn = 0x400000000
+x86 PAT enabled: cpu 0, old 0x7040600070406, new 0x7010600070106
+CPU MTRRs all blank - virtualized system.
+found SMP MP-table at [ffff8800000f0050] f0050
+init_memory_mapping: 0000000000000000-0000000020000000

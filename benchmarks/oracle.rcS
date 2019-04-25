@@ -1,0 +1,9 @@
+#!/bin/sh
+#ls
+echo "Compiling"
+#gcc /oracle.c -lpthread -o oracle
+gcc /sp_r_de_w.c -lpthread -o oracle
+/sbin/m5 resetstats
+./oracle 1000 8
+/sbin/m5 dumpstats
+/sbin/m5 exit

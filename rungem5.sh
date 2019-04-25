@@ -92,6 +92,11 @@ case "$1" in
 				script="./benchmarks/fluidanimate.rcS"
 				;;
 
+			"oracle")
+				bname="oracle"
+				script="./benchmarks/oracle.rcS"
+				;;
+
 			"x264")
 				bname="x264"
 				script="./benchmarks/x264.rcS"

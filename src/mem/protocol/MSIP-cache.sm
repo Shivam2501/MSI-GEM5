@@ -51,8 +51,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         // States moving to Invalid
         MI_A,   AccessPermission:Busy,
                     desc="Was modified, moving to I, waiting for put ack";
-        SI_A,   AccessPermission:Busy,
-                    desc="Was shared, moving to I, waiting for put ack";
         II_A,   AccessPermission:Invalid,
                     desc="Sent valid data before receiving put ack";
     }
@@ -555,13 +553,12 @@ machine(MachineType:L1Cache, "MSI Cache")
         popForwardQueue;
     }
 
-    transition({MI_A, SI_A, II_A}, {Load, Store, Replacement}) {
+    transition({MI_A, II_A}, {Load, Store, Replacement}) {
         stall;
     }
 
-    transition(MI_A, FwdGetS, SI_A) {
+    transition(MI_A, FwdGetS, II_A) {
         sendCacheDataToReq;
-        sendCacheDataToDir;
         popForwardQueue;
     }
 
@@ -570,13 +567,8 @@ machine(MachineType:L1Cache, "MSI Cache")
         popForwardQueue;
     }
 
-    transition({MI_A, SI_A, II_A}, PutAck, I) {
+    transition({MI_A, II_A}, PutAck, I) {
         deallocateCacheBlock;
-        popForwardQueue;
-    }
-
-    transition(SI_A, Inv, II_A) {
-        sendInvAcktoReq;
         popForwardQueue;
     }
 
