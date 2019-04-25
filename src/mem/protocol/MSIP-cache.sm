@@ -572,4 +572,8 @@ machine(MachineType:L1Cache, "MSI Cache")
         popForwardQueue;
     }
 
+    transition({MI_A, II_A}, Inv) {
+        stall;
+    }
+
 }
