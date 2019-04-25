@@ -1,0 +1,6 @@
+protocol "MSIP";
+include "RubySlicc_interfaces.slicc";
+include "MSIP-msg.sm";
+include "MSIP-cache.sm";
+include "MSIP-dir.sm";
+include "MSIP-dma.sm";

@@ -1,0 +1,788 @@
+/*
+ * MSI Protocol
+ */
+
+machine(MachineType:L1Cache, "MSI Cache")
+ : Sequencer * sequencer;
+   CacheMemory * cacheMemory;
+   Prefetcher * prefetcher;
+   bool send_evictions;
+   bool enable_prefetch := "False";
+
+   // Message Queues
+   // From the L1 Cache to the network
+
+   // L1 -> Dir
+   MessageBuffer * requestToDir, network="To", virtual_network="2",
+	vnet_type="request";
+
+   // L1 -> Dir/Cache
+   MessageBuffer * responseToDirOrSibling, network="To", virtual_network="4",
+	vnet_type="response";
+
+   // Dir -> L1
+   MessageBuffer * forwardFromDir, network="From", virtual_network="3",
+	vnet_type="forward";
+
+   // Dir/Cache -> L1
+   MessageBuffer * responseFromDirOrSibling, network="From",
+	virtual_network="4", vnet_type="response";
+
+
+   // Request Buffer for prefetches
+   MessageBuffer * optionalQueue;
+
+   // Buffer for requests from the core
+   MessageBuffer * mandatoryQueue;
+{
+
+    // States
+    state_declaration(State, desc="Cache states") {
+        // Base states
+        I,      AccessPermission:Invalid,
+                    desc="Not present/Invalid";
+        S,      AccessPermission:Read_Only,
+                    desc="Shared, Read-only, other caches may have the block";
+        M,      AccessPermission:Read_Write,
+                    desc="Modified, Read & write permissions, Owner of block";
+
+        // Transient states
+
+        // States moving out of I
+        IS_D,   AccessPermission:Invalid,
+                    desc="Invalid, moving to S, waiting for data";
+        IM_AD,  AccessPermission:Invalid,
+                    desc="Invalid, moving to M, waiting for acks and data";
+        IM_A,   AccessPermission:Busy,
+                    desc="Invalid, moving to M, waiting for acks";
+
+        // States moving out of S
+        SM_AD,  AccessPermission:Read_Only,
+                    desc="Shared, moving to M, waiting for acks and 'data'";
+        SM_A,   AccessPermission:Read_Only,
+                    desc="Shared, moving to M, waiting for acks";
+
+        // States moving to Invalid
+        MI_A,   AccessPermission:Busy,
+                    desc="Was modified, moving to I, waiting for put ack";
+        SI_A,   AccessPermission:Busy,
+                    desc="Was shared, moving to I, waiting for put ack";
+        II_A,   AccessPermission:Invalid,
+                    desc="Sent valid data before receiving put ack";
+
+        // Prefetch
+        PF_IS,  AccessPermission:Busy,
+                    desc="Invalid, moving to S, waiting for data";
+        PF_IM,  AccessPermission:Busy,
+                    desc="Invalid, moving to M, waiting for data";
+        PF_SM,  AccessPermission:Busy,
+                    desc="Shared, moving to M, waiting for data";
+    }
+
+    // Events
+    enumeration(Event, desc="Cache events") {
+        // From the core
+        Load,           desc="Load from processor";
+        // Ifetch,         desc="Ifetch from processor";
+        Store,          desc="Store from processor";
+
+        // Internal event
+        Replacement,    desc="Triggered when block is chosen as victim";
+
+        // Forwarded reqeust from other cache
+        FwdGetS,        desc="Directory sent us a request to satisfy GetS. ";
+        FwdGetM,        desc="Directory sent us a request to satisfy GetM. ";
+        Inv,            desc="Invalidate from the directory.";
+        PutAck,         desc="Response from directory after we issue a put. ";
+
+        // Responses from directory
+        DataDirNoAcks,  desc="Data from directory (acks = 0)";
+        DataDirAcks,    desc="Data from directory (acks > 0)";
+
+        // Responses from other caches
+        DataOwner,      desc="Data from owner";
+        InvAck,         desc="Invalidation ack from other cache after Inv";
+        LastInvAck,     desc="Triggered after the last ack is received";
+
+        // From the prefetcher
+        PF_Load,        desc="Load request from the prefetcher";
+        // PF_Ifetch,      desc="Ifetch request from the prefetcher";
+        PF_Store,       desc="Exclusive load request from the prefetcher";
+    }
+
+    // Structures
+
+    // Cache Entry
+    structure(Entry, desc="Cache entry", interface="AbstractCacheEntry") {
+        State CacheState,               desc="Cache state";
+        DataBlock DataBlk,              desc="Data in the block";
+        bool isPrefetch,                desc="Set if the block was prefetched";
+    }
+
+    // TBE
+    structure(TBE, desc="Entry for transient requests") {
+        State TBEState,                 desc="State of block";
+        DataBlock DataBlk,              desc="Data for the block. Needed for MI_A";
+        int AcksOutstanding, default=0, desc="Number of acks left to receive";
+        bool isPrefetch,                desc="Set if this was caused by a prefetch";
+    }
+
+    structure(TBETable, external="yes") {
+      TBE lookup(Addr);
+      void allocate(Addr);
+      void deallocate(Addr);
+      bool isPresent(Addr);
+    }
+
+    TBETable TBEs, template="<L1Cache_TBE>", constructor="m_number_of_TBEs";
+
+    Tick clockEdge();
+    void set_cache_entry(AbstractCacheEntry a);
+    void unset_cache_entry();
+    void set_tbe(TBE b);
+    void unset_tbe();
+
+    MachineID mapAddressToMachine(Addr addr, MachineType mtype);
+
+    Entry getCacheEntry(Addr address), return_by_pointer="yes" {
+        return static_cast(Entry, "pointer", cacheMemory.lookup(address));
+    }
+
+    State getState(TBE tbe, Entry cache_entry, Addr addr) {
+        if (is_valid(tbe)) {
+            return tbe.TBEState;
+        } else if (is_valid(cache_entry)) {
+            return cache_entry.CacheState;
+        } else {
+            return State:I;
+        }
+    }
+
+    void setState(TBE tbe, Entry cache_entry, Addr addr, State state) {
+        if (is_valid(tbe)) {
+            tbe.TBEState := state;
+        }
+
+        if (is_valid(cache_entry)) {
+            cache_entry.CacheState := state;
+        }
+    }
+
+    AccessPermission getAccessPermission(Addr addr) {
+        TBE tbe := TBEs[addr];
+        if(is_valid(tbe)) {
+            return L1Cache_State_to_permission(tbe.TBEState);
+        }
+
+        Entry cache_entry := getCacheEntry(addr);
+        if(is_valid(cache_entry)) {
+            return L1Cache_State_to_permission(cache_entry.CacheState);
+        }
+
+        return AccessPermission:NotPresent;
+    }
+
+    void setAccessPermission(Entry cache_entry, Addr addr, State state) {
+        if (is_valid(cache_entry)) {
+            cache_entry.changePermission(L1Cache_State_to_permission(state));
+        }
+    }
+
+    void functionalRead(Addr addr, Packet *pkt) {
+        TBE tbe := TBEs[addr];
+        if(is_valid(tbe)) {
+            testAndRead(addr, tbe.DataBlk, pkt);
+        } else {
+            testAndRead(addr, getCacheEntry(addr).DataBlk, pkt);
+        }
+    }
+
+    int functionalWrite(Addr addr, Packet *pkt) {
+        int num_functional_writes := 0;
+
+        TBE tbe := TBEs[addr];
+        if(is_valid(tbe)) {
+            num_functional_writes := num_functional_writes +
+                testAndWrite(addr, tbe.DataBlk, pkt);
+            return num_functional_writes;
+        }
+
+        num_functional_writes := num_functional_writes +
+                testAndWrite(addr, getCacheEntry(addr).DataBlk, pkt);
+        return num_functional_writes;
+    }
+
+    // Network ports
+    out_port(request_out, RequestMsg, requestToDir);
+    out_port(response_out, ResponseMsg, responseToDirOrSibling);
+    out_port(optionalQueue_out, RubyRequest, optionalQueue);
+
+    in_port(response_in, ResponseMsg, responseFromDirOrSibling) {
+        if (response_in.isReady(clockEdge())) {
+            peek(response_in, ResponseMsg) {
+                Entry cache_entry := getCacheEntry(in_msg.addr);
+                TBE tbe := TBEs[in_msg.addr];
+                assert(is_valid(tbe));
+
+                if (machineIDToMachineType(in_msg.Sender) ==
+                            MachineType:Directory) {
+                    if (in_msg.Type != CoherenceResponseType:Data) {
+                        error("Directory should only reply with data");
+                    }
+                    assert(in_msg.Acks + tbe.AcksOutstanding >= 0);
+                    if (in_msg.Acks + tbe.AcksOutstanding == 0) {
+                        trigger(Event:DataDirNoAcks, in_msg.addr, cache_entry,
+                                tbe);
+                    } else {
+                        trigger(Event:DataDirAcks, in_msg.addr, cache_entry,
+                                tbe);
+                    }
+                } else {
+                    if (in_msg.Type == CoherenceResponseType:Data) {
+                        trigger(Event:DataOwner, in_msg.addr, cache_entry,
+                                tbe);
+                    } else if (in_msg.Type == CoherenceResponseType:InvAck) {
+                        if (tbe.AcksOutstanding == 1) {
+                            trigger(Event:LastInvAck, in_msg.addr, cache_entry,
+                                    tbe);
+                        } else {
+                            trigger(Event:InvAck, in_msg.addr, cache_entry,
+                                    tbe);
+                        }
+                    } else {
+                        error("Unexpected reponse from other cache");
+                    }
+                }
+            }
+        }
+    }
+
+    in_port(forward_in, RequestMsg, forwardFromDir) {
+        if (forward_in.isReady(clockEdge())) {
+            peek(forward_in, RequestMsg) {
+                Entry cache_entry := getCacheEntry(in_msg.addr);
+                TBE tbe := TBEs[in_msg.addr];
+
+                if (in_msg.Type == CoherenceRequestType:GetS) {
+                    trigger(Event:FwdGetS, in_msg.addr, cache_entry, tbe);
+                } else if (in_msg.Type == CoherenceRequestType:GetM) {
+                    trigger(Event:FwdGetM, in_msg.addr, cache_entry, tbe);
+                } else if (in_msg.Type == CoherenceRequestType:Inv) {
+                    trigger(Event:Inv, in_msg.addr, cache_entry, tbe);
+                } else if (in_msg.Type == CoherenceRequestType:PutAck) {
+                    trigger(Event:PutAck, in_msg.addr, cache_entry, tbe);
+                } else {
+                    error("Unexpected forward message!");
+                }
+            }
+        }
+    }
+
+    in_port(optionalQueue_in, RubyRequest, optionalQueue) {
+        if (optionalQueue_in.isReady(clockEdge())) {
+            peek(optionalQueue_in, RubyRequest) {
+                Entry cache_entry := getCacheEntry(in_msg.LineAddress);
+                TBE tbe := TBEs[in_msg.LineAddress];
+
+                // if (is_valid(cache_entry) || is_valid(tbe)) {
+                    // optionalQueue_in.dequeue();
+
+                // } else
+		if (cacheMemory.cacheAvail(in_msg.LineAddress) == false) {
+                    trigger(Event:Replacement, cacheMemory.cacheProbe(in_msg.LineAddress),
+                            getCacheEntry(cacheMemory.cacheProbe(in_msg.LineAddress)),
+                            TBEs[cacheMemory.cacheProbe(in_msg.LineAddress)]);
+                } else {
+                    if (in_msg.Type == RubyRequestType:LD) {
+                        trigger(Event:PF_Load, in_msg.LineAddress, cache_entry, tbe);
+                    } else if (in_msg.Type == RubyRequestType:IFETCH) {
+                        trigger(Event:PF_Load, in_msg.LineAddress, cache_entry, tbe);
+                    } else if ((in_msg.Type == RubyRequestType:ST) ||
+                                (in_msg.Type == RubyRequestType:ATOMIC)) {
+                        trigger(Event:PF_Store, in_msg.LineAddress, cache_entry, tbe);
+                    } else {
+                        error("Invalid RubyRequestType");
+                    }
+                }
+            }
+        }
+    }
+
+    in_port(mandatoryQueue_in, RubyRequest, mandatoryQueue) {
+        if (mandatoryQueue_in.isReady(clockEdge())) {
+            peek(mandatoryQueue_in, RubyRequest, block_on="LineAddress") {
+                Entry cache_entry := getCacheEntry(in_msg.LineAddress);
+                TBE tbe := TBEs[in_msg.LineAddress];
+                if (is_invalid(cache_entry) &&
+                        cacheMemory.cacheAvail(in_msg.LineAddress) == false ) {
+                    Addr addr := cacheMemory.cacheProbe(in_msg.LineAddress);
+                    Entry victim_entry := getCacheEntry(addr);
+                    TBE victim_tbe := TBEs[addr];
+                    trigger(Event:Replacement, addr, victim_entry, victim_tbe);
+                } else {
+                    if (in_msg.Type == RubyRequestType:LD) {
+                        trigger(Event:Load, in_msg.LineAddress, cache_entry, tbe);
+                    } else if (in_msg.Type == RubyRequestType:IFETCH) {
+                        trigger(Event:Load, in_msg.LineAddress, cache_entry, tbe);
+                    } else if ((in_msg.Type == RubyRequestType:ST) ||
+                                (in_msg.Type == RubyRequestType:ATOMIC)) {
+                        trigger(Event:Store, in_msg.LineAddress, cache_entry, tbe);
+                    } else {
+                        error("Unexected type from processor");
+                    }
+                }
+            }
+        }
+    }
+
+    void enqueuePrefetch(Addr address, RubyRequestType type) {
+        enqueue(optionalQueue_out, RubyRequest, 1) {
+            out_msg.LineAddress := address;
+            out_msg.Type := type;
+            out_msg.AccessMode := RubyAccessMode:Supervisor;
+        }
+    }
+
+    // Actions
+    action(sendGetS, "gS", desc="Send GetS to the directory") {
+        enqueue(request_out, RequestMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceRequestType:GetS;
+            out_msg.Destination.add(mapAddressToMachine(address,
+                                    MachineType:Directory));
+            out_msg.MessageSize := MessageSizeType:Control;
+            out_msg.Requestor := machineID;
+        }
+    }
+
+    action(sendGetM, "gM", desc="Send GetM to the directory") {
+        enqueue(request_out, RequestMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceRequestType:GetM;
+            out_msg.Destination.add(mapAddressToMachine(address,
+                                    MachineType:Directory));
+            out_msg.MessageSize := MessageSizeType:Control;
+            out_msg.Requestor := machineID;
+        }
+    }
+
+    action(sendPutS, "pS", desc="Send PutS to the directory") {
+        enqueue(request_out, RequestMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceRequestType:PutS;
+            out_msg.Destination.add(mapAddressToMachine(address,
+                                    MachineType:Directory));
+            out_msg.MessageSize := MessageSizeType:Control;
+            out_msg.Requestor := machineID;
+        }
+    }
+
+    action(sendPutM, "pM", desc="Send putM+data to the directory") {
+        enqueue(request_out, RequestMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceRequestType:PutM;
+            out_msg.Destination.add(mapAddressToMachine(address,
+                                    MachineType:Directory));
+            out_msg.DataBlk := cache_entry.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Data;
+            out_msg.Requestor := machineID;
+        }
+    }
+
+     action(sendCacheDataToReq, "cdR", desc="Send cache data to requestor") {
+        assert(is_valid(cache_entry));
+        peek(forward_in, RequestMsg) {
+            enqueue(response_out, ResponseMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceResponseType:Data;
+                out_msg.Destination.add(in_msg.Requestor);
+                out_msg.DataBlk := cache_entry.DataBlk;
+                out_msg.MessageSize := MessageSizeType:Data;
+                out_msg.Sender := machineID;
+            }
+        }
+    }
+
+    action(sendCacheDataToDir, "cdD", desc="Send the cache data to the dir") {
+        enqueue(response_out, ResponseMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceResponseType:Data;
+            out_msg.Destination.add(mapAddressToMachine(address,
+                                    MachineType:Directory));
+            out_msg.DataBlk := cache_entry.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Data;
+            out_msg.Sender := machineID;
+        }
+    }
+
+    action(sendInvAcktoReq, "iaR", desc="Send inv-ack to requestor") {
+        peek(forward_in, RequestMsg) {
+            enqueue(response_out, ResponseMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceResponseType:InvAck;
+                out_msg.Destination.add(in_msg.Requestor);
+                out_msg.DataBlk := cache_entry.DataBlk;
+                out_msg.MessageSize := MessageSizeType:Control;
+                out_msg.Sender := machineID;
+            }
+        }
+    }
+
+    action(decrAcks, "da", desc="Decrement the number of acks") {
+        assert(is_valid(tbe));
+        tbe.AcksOutstanding := tbe.AcksOutstanding - 1;
+        APPEND_TRANSITION_COMMENT("Acks: ");
+        APPEND_TRANSITION_COMMENT(tbe.AcksOutstanding);
+    }
+
+    action(storeAcks, "sa", desc="Store the needed acks to the TBE") {
+        assert(is_valid(tbe));
+        peek(response_in, ResponseMsg) {
+            tbe.AcksOutstanding := in_msg.Acks + tbe.AcksOutstanding;
+        }
+        assert(tbe.AcksOutstanding > 0);
+    }
+
+    action(loadHit, "Lh", desc="Load hit") {
+        assert(is_valid(cache_entry));
+        cacheMemory.setMRU(cache_entry);
+        sequencer.readCallback(address, cache_entry.DataBlk, false);
+    }
+
+    action(externalLoadHit, "xLh", desc="External load hit (was a miss)") {
+        assert(is_valid(cache_entry));
+        peek(response_in, ResponseMsg) {
+            cacheMemory.setMRU(cache_entry);
+            sequencer.readCallback(address, cache_entry.DataBlk, true,
+                                   machineIDToMachineType(in_msg.Sender));
+        }
+    }
+
+    action(storeHit, "Sh", desc="Store hit") {
+        assert(is_valid(cache_entry));
+        cacheMemory.setMRU(cache_entry);
+        sequencer.writeCallback(address, cache_entry.DataBlk, false);
+    }
+
+    action(externalStoreHit, "xSh", desc="External store hit (was a miss)") {
+        assert(is_valid(cache_entry));
+        peek(response_in, ResponseMsg) {
+            cacheMemory.setMRU(cache_entry);
+            sequencer.writeCallback(address, cache_entry.DataBlk, true,
+                                   // Note: this could be the last ack.
+                                   machineIDToMachineType(in_msg.Sender));
+        }
+    }
+
+    action(forwardEviction, "e", desc="sends eviction notification to CPU") {
+        if (send_evictions) {
+            sequencer.evictionCallback(address);
+        }
+    }
+
+
+    action(allocateCacheBlock, "a", desc="Allocate a cache block") {
+        assert(is_invalid(cache_entry));
+        assert(cacheMemory.cacheAvail(address));
+        set_cache_entry(cacheMemory.allocate(address, new Entry));
+    }
+
+    action(deallocateCacheBlock, "d", desc="Deallocate a cache block") {
+        assert(is_valid(cache_entry));
+        cacheMemory.deallocate(address);
+        unset_cache_entry();
+    }
+
+    action(writeDataToCache, "wd", desc="Write data to the cache") {
+        peek(response_in, ResponseMsg) {
+            assert(is_valid(cache_entry));
+            cache_entry.DataBlk := in_msg.DataBlk;
+        }
+    }
+
+    action(allocateTBE, "aT", desc="Allocate TBE") {
+        assert(is_invalid(tbe));
+        TBEs.allocate(address);
+        set_tbe(TBEs[address]);
+        tbe.isPrefetch := false;
+    }
+
+    action(deallocateTBE, "dT", desc="Deallocate TBE") {
+        assert(is_valid(tbe));
+        TBEs.deallocate(address);
+        unset_tbe();
+    }
+
+    action(copyDataFromCacheToTBE, "Dct", desc="Copy data from cache to TBE") {
+        assert(is_valid(cache_entry));
+        assert(is_valid(tbe));
+        tbe.DataBlk := cache_entry.DataBlk;
+    }
+
+    action(popMandatoryQueue, "pQ", desc="Pop the mandatory queue") {
+        mandatoryQueue_in.dequeue(clockEdge());
+    }
+
+    action(popResponseQueue, "pR", desc="Pop the response queue") {
+        response_in.dequeue(clockEdge());
+    }
+
+    action(popForwardQueue, "pF", desc="Pop the forward queue") {
+        forward_in.dequeue(clockEdge());
+    }
+
+    action(stall, "z", desc="Stall the incoming request") {
+    }
+
+    action(po_observeHit, "\ph", desc="Inform the prefetcher about the hit") {
+        peek(mandatoryQueue_in, RubyRequest) {
+            if (cache_entry.isPrefetch) {
+                prefetcher.observePfHit(in_msg.LineAddress);
+                cache_entry.isPrefetch := false;
+            }
+        }
+    }
+
+    action(po_observeMiss, "\po", desc="Inform the prefetcher about the miss") {
+        peek(mandatoryQueue_in, RubyRequest) {
+            if (enable_prefetch) {
+                prefetcher.observeMiss(in_msg.LineAddress, in_msg.Type);
+            }
+        }
+    }
+
+    action(ppm_observePfMiss, "\ppm",
+            desc="Inform the prefetcher about the partial miss") {
+        peek(mandatoryQueue_in, RubyRequest) {
+            prefetcher.observePfMiss(in_msg.LineAddress);
+        }
+    }
+
+    action(pq_popPrefetchQueue, "\pq", desc="Pop the prefetch request queue") {
+        optionalQueue_in.dequeue(clockEdge());
+    }
+
+    action(mp_markPrefetched, "mp", desc="Set the isPrefetch flag") {
+        assert(is_valid(cache_entry));
+        cache_entry.isPrefetch := true;
+    }
+
+    // Transitions
+
+    transition({IS_D, IM_AD, IM_A, S, SM_AD, SM_A, M, MI_A, SI_A, II_A, PF_IS, PF_IM},
+               {PF_Load, PF_Store}) {
+        pq_popPrefetchQueue;
+    }
+
+    transition(I, Load, IS_D) {
+        allocateCacheBlock;
+        allocateTBE;
+        sendGetS;
+        po_observeMiss;
+        popMandatoryQueue;
+    }
+
+    transition(I, PF_Load, PF_IS) {
+        allocateCacheBlock;
+        allocateTBE;
+        sendGetS;
+        pq_popPrefetchQueue;
+    }
+
+    transition(PF_IS, Load, IS_D) {
+        ppm_observePfMiss;
+        popMandatoryQueue;
+    }
+
+    transition(I, Store, IM_AD) {
+        allocateCacheBlock;
+        allocateTBE;
+        sendGetM;
+        po_observeMiss;
+        popMandatoryQueue;
+    }
+
+    transition(I, PF_Store, PF_IM) {
+        allocateCacheBlock;
+        allocateTBE;
+        sendGetM;
+        pq_popPrefetchQueue;
+    }
+
+    transition(PF_IM, Store, IM_AD) {
+        ppm_observePfMiss;
+        popMandatoryQueue;
+    }
+
+    transition(PF_SM, Store, IM_A) {
+        ppm_observePfMiss;
+        popMandatoryQueue;
+    }
+
+    transition(IS_D, {Load, Store, Replacement, Inv}) {
+        stall;
+    }
+
+    transition(PF_IS, {Store, Replacement, Inv}) {
+        stall;
+    }
+
+    transition(IS_D, {DataDirNoAcks, DataOwner}, S) {
+        writeDataToCache;
+        deallocateTBE;
+        externalLoadHit;
+        popResponseQueue;
+    }
+
+    transition(PF_IS, {DataDirNoAcks, DataOwner}, S) {
+        writeDataToCache;
+        deallocateTBE;
+        mp_markPrefetched;
+        popResponseQueue;
+    }
+
+    transition({IM_AD, IM_A}, {Load, Store, Replacement, FwdGetS, FwdGetM}) {
+        stall;
+    }
+
+    transition({PF_IM, PF_SM}, {Load, Replacement, FwdGetS, FwdGetM}) {
+        stall;
+    }
+
+    transition({IM_AD, SM_AD}, {DataDirNoAcks, DataOwner}, M) {
+        writeDataToCache;
+        deallocateTBE;
+        externalStoreHit;
+        popResponseQueue;
+    }
+
+    transition(PF_IM, {DataDirNoAcks, DataOwner}, M) {
+        writeDataToCache;
+        deallocateTBE;
+        mp_markPrefetched;
+        popResponseQueue;
+    }
+
+    transition(IM_AD, DataDirAcks, IM_A) {
+        writeDataToCache;
+        storeAcks;
+        popResponseQueue;
+    }
+
+    transition(PF_IM, DataDirAcks, PF_SM) {
+        writeDataToCache;
+        storeAcks;
+        popResponseQueue;
+    }
+
+    transition({IM_AD, IM_A, SM_AD, SM_A, PF_IM, PF_SM}, InvAck) {
+        decrAcks;
+        popResponseQueue;
+    }
+
+    transition({IM_A, SM_A}, LastInvAck, M) {
+        deallocateTBE;
+        externalStoreHit;
+        popResponseQueue;
+    }
+
+    transition(PF_SM, LastInvAck, M) {
+        deallocateTBE;
+        mp_markPrefetched;
+        popResponseQueue;
+    }
+
+    transition({S, SM_AD, SM_A, M}, Load) {
+        loadHit;
+        po_observeHit;
+        popMandatoryQueue;
+    }
+
+    transition(S, Store, SM_AD) {
+        allocateTBE;
+        sendGetM;
+        popMandatoryQueue;
+    }
+
+    transition(S, Replacement, SI_A) {
+        forwardEviction;
+        sendPutS;
+    }
+
+    transition(S, Inv, I) {
+        forwardEviction;
+        sendInvAcktoReq;
+        deallocateCacheBlock;
+        popForwardQueue;
+    }
+
+    transition({SM_AD, SM_A}, {Store, Replacement, FwdGetS, FwdGetM}) {
+        stall;
+    }
+
+    transition(SM_AD, Inv, IM_AD) {
+        sendInvAcktoReq;
+        popForwardQueue;
+    }
+
+    transition(SM_AD, DataDirAcks, SM_A) {
+        writeDataToCache;
+        storeAcks;
+        popResponseQueue;
+    }
+
+    transition(M, Store) {
+        storeHit;
+        po_observeHit
+        popMandatoryQueue;
+    }
+
+    transition(M, Replacement, MI_A) {
+        forwardEviction;
+        sendPutM;
+    }
+
+    transition(M, Inv, MI_A) {
+        forwardEviction;
+        sendPutM;
+    }
+
+    transition(M, FwdGetS, S) {
+        sendCacheDataToReq;
+        sendCacheDataToDir;
+        popForwardQueue;
+    }
+
+    transition(M, FwdGetM, I) {
+        forwardEviction;
+        sendCacheDataToReq;
+        deallocateCacheBlock;
+        popForwardQueue;
+    }
+
+    transition({MI_A, SI_A, II_A}, {Load, Store, Replacement}) {
+        stall;
+    }
+
+    transition(MI_A, FwdGetS, SI_A) {
+        sendCacheDataToReq;
+        sendCacheDataToDir;
+        popForwardQueue;
+    }
+
+    transition(MI_A, FwdGetM, II_A) {
+        sendCacheDataToReq;
+        popForwardQueue;
+    }
+
+    transition({MI_A, SI_A, II_A}, PutAck, I) {
+        deallocateCacheBlock;
+        popForwardQueue;
+    }
+
+    transition(SI_A, Inv, II_A) {
+        sendInvAcktoReq;
+        popForwardQueue;
+    }
+
+}
