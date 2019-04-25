@@ -537,10 +537,10 @@ def makeX86System(mem_mode, numCPUs=1, mdesc=None, self=None, Ruby=False):
 
     # Disks
     disk0 = CowIdeDisk(driveID='master')
-    disk2 = CowIdeDisk(driveID='master')
+    #disk2 = CowIdeDisk(driveID='master')
     disk0.childImage(mdesc.disk())
-    disk2.childImage(disk('linux-bigswap2.img'))
-    self.pc.south_bridge.ide.disks = [disk0, disk2]
+    #disk2.childImage(disk('linux-bigswap2.img'))
+    self.pc.south_bridge.ide.disks = [disk0] #, disk2]
 
     # Add in a Bios information structure.
     structures = [X86SMBiosBiosInformation()]
@@ -657,7 +657,7 @@ def makeLinuxX86System(mem_mode, numCPUs=1, mdesc=None, Ruby=False,
     if not cmdline:
         cmdline = 'earlyprintk=ttyS0 console=ttyS0 lpj=7999923 root=/dev/hda1'
     self.boot_osflags = fillInCmdline(mdesc, cmdline)
-    self.kernel = binary('x86_64-vmlinux-2.6.22.9')
+    #self.kernel = binary('x86_64-vmlinux-2.6.22.9')
     return self
 
 

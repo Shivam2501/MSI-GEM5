@@ -7,22 +7,22 @@ case "$1" in
 		case $2 in
 			"blackscholes")
 				bname="blackscholes"
-				script="./blackscholes.rcS"
+				script="./benchmarks/blackscholes.rcS"
 				;;
 
 			"bodytrack")
 				bname="bodytrack"
-				script="./bodytrack.rcS"
+				script="./benchmarks/bodytrack.rcS"
 				;;
 
 			"fluidanimate")
 				bname="fluidanimate"
-				script="./fluidanimate.rcS"
+				script="./benchmarks/fluidanimate.rcS"
 				;;
 
 			"x264")
 				bname="x264"
-				script="./x264.rcS"
+				script="./benchmarks/x264.rcS"
 				;;
 			*)
 				echo "Usage:
@@ -79,22 +79,22 @@ case "$1" in
 		case $2 in
 			"blackscholes")
 				bname="blackscholes"
-				script="./blackscholes.rcS"
+				script="./benchmarks/blackscholes.rcS"
 				;;
 
 			"bodytrack")
 				bname="bodytrack"
-				script="./bodytrack.rcS"
+				script="./benchmarks/bodytrack.rcS"
 				;;
 
 			"fluidanimate")
 				bname="fluidanimate"
-				script="./fluidanimate.rcS"
+				script="./benchmarks/fluidanimate.rcS"
 				;;
 
 			"x264")
 				bname="x264"
-				script="./x264.rcS"
+				script="./benchmarks/x264.rcS"
 				;;
 			*)
 				echo "Usage:

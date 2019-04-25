@@ -1,0 +1,4 @@
+#!/bin/sh
+/sbin/m5 resetstats
+/parsec/install/bin/blackscholes 8 /parsec/install/inputs/blackscholes/in_4K.txt prices.txt
+/sbin/m5 exit

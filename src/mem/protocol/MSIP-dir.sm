@@ -4,13 +4,13 @@ machine(MachineType:Directory, "Directory Protocol")
 
       MessageBuffer *forwardToCache, network="To", virtual_network="3",
             vnet_type="forward";
-    
+
       MessageBuffer *responseToCache, network="To", virtual_network="4",
             vnet_type="response";
-    
+
       MessageBuffer *responseToDMA, network="To", virtual_network="1",
             vnet_type="response";
-    
+
       MessageBuffer *requestFromCache, network="From", virtual_network="2",
             vnet_type="request";
 
@@ -27,11 +27,9 @@ machine(MachineType:Directory, "Directory Protocol")
     state_declaration(State, desc="Directory states", default="Directory_State_I") {
         // Stable states
         I, AccessPermission:Read_Write,  desc="Invalid in the caches.";
-        S, AccessPermission:Read_Only,   desc="At least one cache has the blk";
         M, AccessPermission:Invalid,     desc="A cache has the block in M";
 
         // Transient states
-        S_D, AccessPermission:Busy,      desc="Moving to S, but need data";
 
         // Waiting for data from memory
         S_M, AccessPermission:Read_Write, desc="In S waiting for mem";
@@ -39,7 +37,6 @@ machine(MachineType:Directory, "Directory Protocol")
 
         // Waiting for write-ack from memory
         MI_M, AccessPermission:Busy,       desc="Moving to I waiting for ack";
-        SS_M, AccessPermission:Busy,       desc="Moving to I waiting for ack";
 
         // DMA states
         ID, AccessPermission:Busy,          desc="DMA_Read when in I";
@@ -48,8 +45,6 @@ machine(MachineType:Directory, "Directory Protocol")
         M_DWR, AccessPermission:Busy,       desc="Invalidation for DMA write";
         M_DRDI, AccessPermission:Busy,      desc="M_DRD->I";
         M_DWRI, AccessPermission:Busy,      desc="M_DWR->I";
-        SRD, AccessPermission:Busy,         desc="DMA_Read when in S";
-        SWD, AccessPermission:Busy,         desc="DMA_Write when in S";
     }
 
     // Events
@@ -120,7 +115,7 @@ machine(MachineType:Directory, "Directory Protocol")
             return dir_entry;
         }
 
-        dir_entry := static_cast(Entry, "pointer", 
+        dir_entry := static_cast(Entry, "pointer",
                                  directory.allocate(addr, new Entry));
         return dir_entry;
     }
@@ -147,7 +142,7 @@ machine(MachineType:Directory, "Directory Protocol")
             }
 
             getDirectoryEntry(addr).DirState := state;
-            
+
             if (state == State:I) {
                 assert(getDirectoryEntry(addr).Owner.count() == 0);
                 assert(getDirectoryEntry(addr).Sharers.count() == 0);
@@ -520,7 +515,7 @@ machine(MachineType:Directory, "Directory Protocol")
             out_msg.PhysicalAddress := address;
             out_msg.LineAddress := address;
             out_msg.Type := DMAResponseType:ACK;
-            out_msg.Destination.add(tbe.DmaRequestor); 
+            out_msg.Destination.add(tbe.DmaRequestor);
             out_msg.MessageSize := MessageSizeType:Control;
         }
     }
@@ -591,9 +586,8 @@ machine(MachineType:Directory, "Directory Protocol")
     }
 
     // Transitions
-    transition({I, S}, GetS, S_M) {
+    transition(I, GetS, S_M) {
         sendMemRead;
-        addReqToSharers;
         popRequestQueue;
     }
 
@@ -602,7 +596,7 @@ machine(MachineType:Directory, "Directory Protocol")
         popRequestQueue;
     }
 
-    transition(S_M, MemData, S) {
+    transition(S_M, MemData, I) {
         sendDataToReq;
         popMemQueue;
     }
@@ -615,35 +609,16 @@ machine(MachineType:Directory, "Directory Protocol")
 
     transition(M_M, MemData, M) {
         sendDataToReq;
-        clearSharers;
         popMemQueue;
     }
 
-    transition(S, GetM, M_M) {
-        sendMemRead;
-        removeReqFromSharers;
-        sendInvToSharers;
-        setOwner;
-        popRequestQueue;
-    }
-
-    transition({S, S_D, SS_M, S_M}, {PutSNotLast, PutMNonOwner}) {
-        removeReqFromSharers;
+    transition(S_M, {PutSNotLast, PutMNonOwner}) {
         sendPutAck;
         popRequestQueue;
     }
 
-    transition(S, PutSLast, I) {
-        removeReqFromSharers;
-        sendPutAck;
-        popRequestQueue;
-    }
-
-    transition(M, GetS, S_D) {
+    transition(M, GetS) {
         sendFwdGetS;
-        addReqToSharers;
-        addOwnerToSharers;
-        clearOwner;
         popRequestQueue;
     }
 
@@ -672,28 +647,9 @@ machine(MachineType:Directory, "Directory Protocol")
         popMemQueue;
     }
 
-    transition(S_D, {GetS, GetM}) {
-        stall;
-    }
-
-    transition(S_D, PutSLast) {
-        removeReqFromSharers;
-        sendPutAck;
-        popRequestQueue;
-    }
-
-    transition(S_D, Data, SS_M) {
-        sendRespDataToMem;
-        popResponseQueue;
-    }
-
-    transition(SS_M, MemAck, S) {
-        popMemQueue;
-    }
-
     // If we get another request for a block that's waiting on memory,
     // stall that request.
-    transition({MI_M, SS_M, S_M, M_M}, {GetS, GetM}) {
+    transition({MI_M, S_M, M_M}, {GetS, GetM}) {
         stall;
     }
 
@@ -760,57 +716,27 @@ machine(MachineType:Directory, "Directory Protocol")
         popMemQueue;
     }
 
-    transition(S, DMA_READ, SRD) {
-        allocateTbeForDmaRead;
-        sendMemReadDMA;
-        popDMARequestQueue;
-    }
-
-    transition(SRD, MemData, S) {
-        sendDMAData;
-        deallocateTBE;
-        popMemQueue;
-    }
-
-    transition(S, DMA_WRITE, SWD) {
-        allocateTBE;
-        storeAcks;
-        sendCacheInvToSharers;
-        popDMARequestQueue;
-    }
-
-    transition(SWD, InvAck) {
-        decrAcks;
-        popResponseQueue;
-    }
-
-    transition(SWD, LastInvAck, ID_W) {
-        clearSharers;
-        queueMemoryWBRequest_partial;
-        popResponseQueue;
-    }
-
-    transition({S_D, S_M, M_M, MI_M, SS_M, ID, ID_W}, {DMA_READ, DMA_WRITE}) {
+    transition({S_M, M_M, MI_M, ID, ID_W}, {DMA_READ, DMA_WRITE}) {
         zz_recycleDMAQueue;
     }
 
-    transition({M_DRD, M_DRDI, M_DWR, M_DWRI, SRD, SWD}, {DMA_READ, DMA_WRITE}) {
+    transition({M_DRD, M_DRDI, M_DWR, M_DWRI}, {DMA_READ, DMA_WRITE}) {
         zz_recycleDMAQueue;
     }
 
-    transition({ID, ID_W, M_DRDI, M_DWRI, SRD, SWD}, {GetS, GetM}) {
+    transition({ID, ID_W, M_DRDI, M_DWRI}, {GetS, GetM}) {
         stall;
     }
 
-    transition({ID, ID_W, M_DRDI, M_DWRI, SRD, SWD}, {PutSLast, PutSNotLast}) {
+    transition({ID, ID_W, M_DRDI, M_DWRI}, {PutSLast, PutSNotLast}) {
         stall;
     }
 
-    transition({ID, ID_W, M_DRDI, M_DWRI, SRD, SWD}, {PutMOwner, PutMNonOwner}) {
+    transition({ID, ID_W, M_DRDI, M_DWRI}, {PutMOwner, PutMNonOwner}) {
         stall;
     }
 
-    transition({ID, ID_W, M_DRDI, M_DWRI, SRD, SWD}, {Data}) {
+    transition({ID, ID_W, M_DRDI, M_DWRI}, {Data}) {
         stall;
     }
 }

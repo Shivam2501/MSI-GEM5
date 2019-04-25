@@ -5,9 +5,7 @@
 machine(MachineType:L1Cache, "MSI Cache")
  : Sequencer * sequencer;
    CacheMemory * cacheMemory;
-   Prefetcher * prefetcher;
    bool send_evictions;
-   bool enable_prefetch := "False";
 
    // Message Queues
    // From the L1 Cache to the network
@@ -28,10 +26,6 @@ machine(MachineType:L1Cache, "MSI Cache")
    MessageBuffer * responseFromDirOrSibling, network="From",
 	virtual_network="4", vnet_type="response";
 
-
-   // Request Buffer for prefetches
-   MessageBuffer * optionalQueue;
-
    // Buffer for requests from the core
    MessageBuffer * mandatoryQueue;
 {
@@ -41,8 +35,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         // Base states
         I,      AccessPermission:Invalid,
                     desc="Not present/Invalid";
-        S,      AccessPermission:Read_Only,
-                    desc="Shared, Read-only, other caches may have the block";
         M,      AccessPermission:Read_Write,
                     desc="Modified, Read & write permissions, Owner of block";
 
@@ -56,12 +48,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         IM_A,   AccessPermission:Busy,
                     desc="Invalid, moving to M, waiting for acks";
 
-        // States moving out of S
-        SM_AD,  AccessPermission:Read_Only,
-                    desc="Shared, moving to M, waiting for acks and 'data'";
-        SM_A,   AccessPermission:Read_Only,
-                    desc="Shared, moving to M, waiting for acks";
-
         // States moving to Invalid
         MI_A,   AccessPermission:Busy,
                     desc="Was modified, moving to I, waiting for put ack";
@@ -69,21 +55,12 @@ machine(MachineType:L1Cache, "MSI Cache")
                     desc="Was shared, moving to I, waiting for put ack";
         II_A,   AccessPermission:Invalid,
                     desc="Sent valid data before receiving put ack";
-
-        // Prefetch
-        PF_IS,  AccessPermission:Busy,
-                    desc="Invalid, moving to S, waiting for data";
-        PF_IM,  AccessPermission:Busy,
-                    desc="Invalid, moving to M, waiting for data";
-        PF_SM,  AccessPermission:Busy,
-                    desc="Shared, moving to M, waiting for data";
     }
 
     // Events
     enumeration(Event, desc="Cache events") {
         // From the core
         Load,           desc="Load from processor";
-        // Ifetch,         desc="Ifetch from processor";
         Store,          desc="Store from processor";
 
         // Internal event
@@ -103,11 +80,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         DataOwner,      desc="Data from owner";
         InvAck,         desc="Invalidation ack from other cache after Inv";
         LastInvAck,     desc="Triggered after the last ack is received";
-
-        // From the prefetcher
-        PF_Load,        desc="Load request from the prefetcher";
-        // PF_Ifetch,      desc="Ifetch request from the prefetcher";
-        PF_Store,       desc="Exclusive load request from the prefetcher";
     }
 
     // Structures
@@ -116,7 +88,6 @@ machine(MachineType:L1Cache, "MSI Cache")
     structure(Entry, desc="Cache entry", interface="AbstractCacheEntry") {
         State CacheState,               desc="Cache state";
         DataBlock DataBlk,              desc="Data in the block";
-        bool isPrefetch,                desc="Set if the block was prefetched";
     }
 
     // TBE
@@ -124,7 +95,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         State TBEState,                 desc="State of block";
         DataBlock DataBlk,              desc="Data for the block. Needed for MI_A";
         int AcksOutstanding, default=0, desc="Number of acks left to receive";
-        bool isPrefetch,                desc="Set if this was caused by a prefetch";
     }
 
     structure(TBETable, external="yes") {
@@ -215,7 +185,6 @@ machine(MachineType:L1Cache, "MSI Cache")
     // Network ports
     out_port(request_out, RequestMsg, requestToDir);
     out_port(response_out, ResponseMsg, responseToDirOrSibling);
-    out_port(optionalQueue_out, RubyRequest, optionalQueue);
 
     in_port(response_in, ResponseMsg, responseFromDirOrSibling) {
         if (response_in.isReady(clockEdge())) {
@@ -278,36 +247,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         }
     }
 
-    in_port(optionalQueue_in, RubyRequest, optionalQueue) {
-        if (optionalQueue_in.isReady(clockEdge())) {
-            peek(optionalQueue_in, RubyRequest) {
-                Entry cache_entry := getCacheEntry(in_msg.LineAddress);
-                TBE tbe := TBEs[in_msg.LineAddress];
-
-                // if (is_valid(cache_entry) || is_valid(tbe)) {
-                    // optionalQueue_in.dequeue();
-
-                // } else
-		if (cacheMemory.cacheAvail(in_msg.LineAddress) == false) {
-                    trigger(Event:Replacement, cacheMemory.cacheProbe(in_msg.LineAddress),
-                            getCacheEntry(cacheMemory.cacheProbe(in_msg.LineAddress)),
-                            TBEs[cacheMemory.cacheProbe(in_msg.LineAddress)]);
-                } else {
-                    if (in_msg.Type == RubyRequestType:LD) {
-                        trigger(Event:PF_Load, in_msg.LineAddress, cache_entry, tbe);
-                    } else if (in_msg.Type == RubyRequestType:IFETCH) {
-                        trigger(Event:PF_Load, in_msg.LineAddress, cache_entry, tbe);
-                    } else if ((in_msg.Type == RubyRequestType:ST) ||
-                                (in_msg.Type == RubyRequestType:ATOMIC)) {
-                        trigger(Event:PF_Store, in_msg.LineAddress, cache_entry, tbe);
-                    } else {
-                        error("Invalid RubyRequestType");
-                    }
-                }
-            }
-        }
-    }
-
     in_port(mandatoryQueue_in, RubyRequest, mandatoryQueue) {
         if (mandatoryQueue_in.isReady(clockEdge())) {
             peek(mandatoryQueue_in, RubyRequest, block_on="LineAddress") {
@@ -332,14 +271,6 @@ machine(MachineType:L1Cache, "MSI Cache")
                     }
                 }
             }
-        }
-    }
-
-    void enqueuePrefetch(Addr address, RubyRequestType type) {
-        enqueue(optionalQueue_out, RubyRequest, 1) {
-            out_msg.LineAddress := address;
-            out_msg.Type := type;
-            out_msg.AccessMode := RubyAccessMode:Supervisor;
         }
     }
 
@@ -450,10 +381,8 @@ machine(MachineType:L1Cache, "MSI Cache")
     }
 
     action(externalLoadHit, "xLh", desc="External load hit (was a miss)") {
-        assert(is_valid(cache_entry));
         peek(response_in, ResponseMsg) {
-            cacheMemory.setMRU(cache_entry);
-            sequencer.readCallback(address, cache_entry.DataBlk, true,
+            sequencer.readCallback(address, tbe.DataBlk, true,
                                    machineIDToMachineType(in_msg.Sender));
         }
     }
@@ -500,11 +429,17 @@ machine(MachineType:L1Cache, "MSI Cache")
         }
     }
 
+    action(writeDataToTBE, "wtb", desc="Write data to the tbe") {
+      peek(response_in, ResponseMsg) {
+        assert(is_valid(tbe));
+          tbe.DataBlk := in_msg.DataBlk;
+      }
+    }
+
     action(allocateTBE, "aT", desc="Allocate TBE") {
         assert(is_invalid(tbe));
         TBEs.allocate(address);
         set_tbe(TBEs[address]);
-        tbe.isPrefetch := false;
     }
 
     action(deallocateTBE, "dT", desc="Deallocate TBE") {
@@ -534,63 +469,11 @@ machine(MachineType:L1Cache, "MSI Cache")
     action(stall, "z", desc="Stall the incoming request") {
     }
 
-    action(po_observeHit, "\ph", desc="Inform the prefetcher about the hit") {
-        peek(mandatoryQueue_in, RubyRequest) {
-            if (cache_entry.isPrefetch) {
-                prefetcher.observePfHit(in_msg.LineAddress);
-                cache_entry.isPrefetch := false;
-            }
-        }
-    }
-
-    action(po_observeMiss, "\po", desc="Inform the prefetcher about the miss") {
-        peek(mandatoryQueue_in, RubyRequest) {
-            if (enable_prefetch) {
-                prefetcher.observeMiss(in_msg.LineAddress, in_msg.Type);
-            }
-        }
-    }
-
-    action(ppm_observePfMiss, "\ppm",
-            desc="Inform the prefetcher about the partial miss") {
-        peek(mandatoryQueue_in, RubyRequest) {
-            prefetcher.observePfMiss(in_msg.LineAddress);
-        }
-    }
-
-    action(pq_popPrefetchQueue, "\pq", desc="Pop the prefetch request queue") {
-        optionalQueue_in.dequeue(clockEdge());
-    }
-
-    action(mp_markPrefetched, "mp", desc="Set the isPrefetch flag") {
-        assert(is_valid(cache_entry));
-        cache_entry.isPrefetch := true;
-    }
-
     // Transitions
 
-    transition({IS_D, IM_AD, IM_A, S, SM_AD, SM_A, M, MI_A, SI_A, II_A, PF_IS, PF_IM},
-               {PF_Load, PF_Store}) {
-        pq_popPrefetchQueue;
-    }
-
     transition(I, Load, IS_D) {
-        allocateCacheBlock;
         allocateTBE;
         sendGetS;
-        po_observeMiss;
-        popMandatoryQueue;
-    }
-
-    transition(I, PF_Load, PF_IS) {
-        allocateCacheBlock;
-        allocateTBE;
-        sendGetS;
-        pq_popPrefetchQueue;
-    }
-
-    transition(PF_IS, Load, IS_D) {
-        ppm_observePfMiss;
         popMandatoryQueue;
     }
 
@@ -598,24 +481,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         allocateCacheBlock;
         allocateTBE;
         sendGetM;
-        po_observeMiss;
-        popMandatoryQueue;
-    }
-
-    transition(I, PF_Store, PF_IM) {
-        allocateCacheBlock;
-        allocateTBE;
-        sendGetM;
-        pq_popPrefetchQueue;
-    }
-
-    transition(PF_IM, Store, IM_AD) {
-        ppm_observePfMiss;
-        popMandatoryQueue;
-    }
-
-    transition(PF_SM, Store, IM_A) {
-        ppm_observePfMiss;
         popMandatoryQueue;
     }
 
@@ -623,21 +488,10 @@ machine(MachineType:L1Cache, "MSI Cache")
         stall;
     }
 
-    transition(PF_IS, {Store, Replacement, Inv}) {
-        stall;
-    }
-
-    transition(IS_D, {DataDirNoAcks, DataOwner}, S) {
-        writeDataToCache;
-        deallocateTBE;
+    transition(IS_D, {DataDirNoAcks, DataOwner}, I) {
+        writeDataToTBE;
         externalLoadHit;
-        popResponseQueue;
-    }
-
-    transition(PF_IS, {DataDirNoAcks, DataOwner}, S) {
-        writeDataToCache;
         deallocateTBE;
-        mp_markPrefetched;
         popResponseQueue;
     }
 
@@ -645,21 +499,10 @@ machine(MachineType:L1Cache, "MSI Cache")
         stall;
     }
 
-    transition({PF_IM, PF_SM}, {Load, Replacement, FwdGetS, FwdGetM}) {
-        stall;
-    }
-
-    transition({IM_AD, SM_AD}, {DataDirNoAcks, DataOwner}, M) {
+    transition(IM_AD, {DataDirNoAcks, DataOwner}, M) {
         writeDataToCache;
         deallocateTBE;
         externalStoreHit;
-        popResponseQueue;
-    }
-
-    transition(PF_IM, {DataDirNoAcks, DataOwner}, M) {
-        writeDataToCache;
-        deallocateTBE;
-        mp_markPrefetched;
         popResponseQueue;
     }
 
@@ -669,71 +512,24 @@ machine(MachineType:L1Cache, "MSI Cache")
         popResponseQueue;
     }
 
-    transition(PF_IM, DataDirAcks, PF_SM) {
-        writeDataToCache;
-        storeAcks;
-        popResponseQueue;
-    }
-
-    transition({IM_AD, IM_A, SM_AD, SM_A, PF_IM, PF_SM}, InvAck) {
+    transition({IM_AD, IM_A}, InvAck) {
         decrAcks;
         popResponseQueue;
     }
 
-    transition({IM_A, SM_A}, LastInvAck, M) {
+    transition(IM_A, LastInvAck, M) {
         deallocateTBE;
         externalStoreHit;
         popResponseQueue;
     }
 
-    transition(PF_SM, LastInvAck, M) {
-        deallocateTBE;
-        mp_markPrefetched;
-        popResponseQueue;
-    }
-
-    transition({S, SM_AD, SM_A, M}, Load) {
+    transition(M, Load) {
         loadHit;
-        po_observeHit;
         popMandatoryQueue;
-    }
-
-    transition(S, Store, SM_AD) {
-        allocateTBE;
-        sendGetM;
-        popMandatoryQueue;
-    }
-
-    transition(S, Replacement, SI_A) {
-        forwardEviction;
-        sendPutS;
-    }
-
-    transition(S, Inv, I) {
-        forwardEviction;
-        sendInvAcktoReq;
-        deallocateCacheBlock;
-        popForwardQueue;
-    }
-
-    transition({SM_AD, SM_A}, {Store, Replacement, FwdGetS, FwdGetM}) {
-        stall;
-    }
-
-    transition(SM_AD, Inv, IM_AD) {
-        sendInvAcktoReq;
-        popForwardQueue;
-    }
-
-    transition(SM_AD, DataDirAcks, SM_A) {
-        writeDataToCache;
-        storeAcks;
-        popResponseQueue;
     }
 
     transition(M, Store) {
         storeHit;
-        po_observeHit
         popMandatoryQueue;
     }
 
@@ -747,9 +543,8 @@ machine(MachineType:L1Cache, "MSI Cache")
         sendPutM;
     }
 
-    transition(M, FwdGetS, S) {
+    transition(M, FwdGetS) {
         sendCacheDataToReq;
-        sendCacheDataToDir;
         popForwardQueue;
     }
 

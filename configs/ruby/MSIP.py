@@ -74,8 +74,6 @@ def create_system(options, full_system, system, dma_ports, bootmem,
                         assoc = options.l1d_assoc,
                         start_index_bit = block_size_bits)
 
-        prefetcher = RubyPrefetcher.Prefetcher()
-
         # the ruby random tester reuses num_cpus to specify the
         # number of cpu ports connected to the tester object, which
         # is stored in system.cpu. because there is only ever one
@@ -91,11 +89,9 @@ def create_system(options, full_system, system, dma_ports, bootmem,
         # Only one unified L1 cache exists. Can cache instructions and data.
         l1_cntrl = L1Cache_Controller(version=i, cacheMemory=cache,
                                       send_evictions=send_evicts(options),
-                                      prefetcher=prefetcher,
                                       transitions_per_cycle=options.ports,
                                       clk_domain=clk_domain,
-                                      ruby_system=ruby_system,
-                                      enable_prefetch=True)
+                                      ruby_system=ruby_system)
 
         cpu_seq = RubySequencer(version=i, icache=cache, dcache=cache,
                                 clk_domain=clk_domain, ruby_system=ruby_system)
@@ -133,7 +129,7 @@ def create_system(options, full_system, system, dma_ports, bootmem,
                                           clk_divider=3)
 
     mem_dir_cntrl_nodes, rom_dir_cntrl_node = create_directories(
-        options, system.mem_ranges, bootmem, ruby_system, system)
+        options, bootmem, ruby_system, system)
     dir_cntrl_nodes = mem_dir_cntrl_nodes[:]
     if rom_dir_cntrl_node is not None:
         dir_cntrl_nodes.append(rom_dir_cntrl_node)
