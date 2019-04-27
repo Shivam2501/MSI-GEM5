@@ -48,6 +48,7 @@ enumeration(CoherenceRequestType, desc="Types of request messages") {
     // "Requests" from the directory to the caches on the fwd network
     Inv,        desc="Probe the cache and invalidate any matching blocks";
     PutAck,     desc="The put request has been processed.";
+    PutNAck,    desc="The put request from a non-owner acknowledged.";
 }
 
 enumeration(CoherenceResponseType, desc="Types of response messages") {

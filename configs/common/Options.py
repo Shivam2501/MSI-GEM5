@@ -45,11 +45,11 @@ import m5
 from m5.defines import buildEnv
 from m5.objects import *
 
-from .Benchmarks import *
-from . import CpuConfig
-from . import BPConfig
-from . import MemConfig
-from . import PlatformConfig
+from common.Benchmarks import *
+from common import CpuConfig
+from common import BPConfig
+from common import MemConfig
+from common import PlatformConfig
 
 def _listCpuTypes(option, opt, value, parser):
     CpuConfig.print_cpu_list()

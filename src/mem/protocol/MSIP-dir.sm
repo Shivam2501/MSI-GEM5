@@ -411,10 +411,22 @@ machine(MachineType:Directory, "Directory Protocol")
     }
 
     action(sendPutAck, "a", desc="Send the put ack") {
-        peek(request_in, RequestMsg) {
+        peek(memQueue_in, MemoryMsg) {
             enqueue(forward_out, RequestMsg, 1) {
                 out_msg.addr := address;
                 out_msg.Type := CoherenceRequestType:PutAck;
+                out_msg.Requestor := in_msg.OriginalRequestorMachId;
+                out_msg.Destination.add(in_msg.OriginalRequestorMachId);
+                out_msg.MessageSize := MessageSizeType:Control;
+            }
+        }
+    }
+
+    action(sendPutNAck, "aN", desc="Send the put nack") {
+        peek(request_in, RequestMsg) {
+            enqueue(forward_out, RequestMsg, 1) {
+                out_msg.addr := address;
+                out_msg.Type := CoherenceRequestType:PutNAck;
                 out_msg.Requestor := machineID;
                 out_msg.Destination.add(in_msg.Requestor);
                 out_msg.MessageSize := MessageSizeType:Control;
@@ -581,18 +593,21 @@ machine(MachineType:Directory, "Directory Protocol")
         assert(tbe.AcksOutstanding > 0);
     }
 
+    action(zz_recycleRequestQueue, "zR", desc="recycle DMA queue") {
+        request_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
+    }
+
     action(zz_recycleDMAQueue, "zz", desc="recycle DMA queue") {
         dmaRequest_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
+    }
+
+    transition({S_M, M_M, MI_M}, {PutMOwner, PutMNonOwner}) {
+      zz_recycleRequestQueue;
     }
 
     // Transitions
     transition(I, GetS, S_M) {
         sendMemRead;
-        popRequestQueue;
-    }
-
-    transition(I, {PutSNotLast, PutSLast, PutMNonOwner}) {
-        sendPutAck;
         popRequestQueue;
     }
 
@@ -612,11 +627,6 @@ machine(MachineType:Directory, "Directory Protocol")
         popMemQueue;
     }
 
-    transition(S_M, {PutSNotLast, PutMNonOwner}) {
-        sendPutAck;
-        popRequestQueue;
-    }
-
     transition(M, GetS) {
         sendFwdGetS;
         popRequestQueue;
@@ -629,22 +639,27 @@ machine(MachineType:Directory, "Directory Protocol")
         popRequestQueue;
     }
 
-    transition({M, M_M, MI_M}, {PutSNotLast, PutSLast, PutMNonOwner}) {
-        sendPutAck;
-        popRequestQueue;
-    }
-
     transition(M, PutMOwner, MI_M) {
         sendDataToMem;
         clearOwner;
         allocateTbeFromRequestNet;
-        sendPutAck;
         popRequestQueue;
     }
 
     transition(MI_M, MemAck, I) {
+        sendPutAck;
         deallocateTBE;
         popMemQueue;
+    }
+
+    transition(M, PutMNonOwner, M) {
+        sendPutNAck;
+        popRequestQueue;
+    }
+
+    transition(I, PutMNonOwner, I) {
+        sendPutNAck;
+        popRequestQueue;
     }
 
     // If we get another request for a block that's waiting on memory,
@@ -694,23 +709,23 @@ machine(MachineType:Directory, "Directory Protocol")
         drp_sendDMAData;
         sendDataToMem;
         clearOwner;
-        sendPutAck;
         popRequestQueue;
     }
 
     transition(M_DWR, PutMOwner, M_DWRI) {
         queueMemoryWBRequest_partialTBE;
         clearOwner;
-        sendPutAck;
         popRequestQueue;
     }
 
     transition(M_DRDI, MemAck, I) {
+        sendPutAck;
         deallocateTBE;
         popMemQueue;
     }
 
     transition(M_DWRI, MemAck, I) {
+        sendPutAck;
         sendDMAAck;
         deallocateTBE;
         popMemQueue;

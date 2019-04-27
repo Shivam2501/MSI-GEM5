@@ -51,8 +51,10 @@ machine(MachineType:L1Cache, "MSI Cache")
         // States moving to Invalid
         MI_A,   AccessPermission:Busy,
                     desc="Was modified, moving to I, waiting for put ack";
-        II_A,   AccessPermission:Invalid,
-                    desc="Sent valid data before receiving put ack";
+        MII_A,  AccessPermission:Busy,
+                    desc="Received nack, waiting to send data";
+        II_A,   AccessPermission:Busy,
+                    desc="Sent data, waiting for nack";
     }
 
     // Events
@@ -69,6 +71,7 @@ machine(MachineType:L1Cache, "MSI Cache")
         FwdGetM,        desc="Directory sent us a request to satisfy GetM. ";
         Inv,            desc="Invalidate from the directory.";
         PutAck,         desc="Response from directory after we issue a put. ";
+        PutNAck,        desc="Response from directory on put without ownership.";
 
         // Responses from directory
         DataDirNoAcks,  desc="Data from directory (acks = 0)";
@@ -238,6 +241,8 @@ machine(MachineType:L1Cache, "MSI Cache")
                     trigger(Event:Inv, in_msg.addr, cache_entry, tbe);
                 } else if (in_msg.Type == CoherenceRequestType:PutAck) {
                     trigger(Event:PutAck, in_msg.addr, cache_entry, tbe);
+                } else if (in_msg.Type == CoherenceRequestType:PutNAck) {
+                    trigger(Event:PutNAck, in_msg.addr, cache_entry, tbe);
                 } else {
                     error("Unexpected forward message!");
                 }
@@ -332,6 +337,20 @@ machine(MachineType:L1Cache, "MSI Cache")
         }
     }
 
+    action(sendTBEDataToReq, "tdR", desc="Send TBE data to requestor") {
+       assert(is_valid(tbe));
+       peek(forward_in, RequestMsg) {
+           enqueue(response_out, ResponseMsg, 1) {
+               out_msg.addr := address;
+               out_msg.Type := CoherenceResponseType:Data;
+               out_msg.Destination.add(in_msg.Requestor);
+               out_msg.DataBlk := tbe.DataBlk;
+               out_msg.MessageSize := MessageSizeType:Data;
+               out_msg.Sender := machineID;
+           }
+       }
+   }
+
     action(sendCacheDataToDir, "cdD", desc="Send the cache data to the dir") {
         enqueue(response_out, ResponseMsg, 1) {
             out_msg.addr := address;
@@ -415,9 +434,10 @@ machine(MachineType:L1Cache, "MSI Cache")
     }
 
     action(deallocateCacheBlock, "d", desc="Deallocate a cache block") {
-        assert(is_valid(cache_entry));
-        cacheMemory.deallocate(address);
-        unset_cache_entry();
+        if (is_valid(cache_entry)) {
+          cacheMemory.deallocate(address);
+          unset_cache_entry();
+        }
     }
 
     action(writeDataToCache, "wd", desc="Write data to the cache") {
@@ -482,6 +502,10 @@ machine(MachineType:L1Cache, "MSI Cache")
         popMandatoryQueue;
     }
 
+    transition(I, Replacement) {
+        deallocateCacheBlock;
+    }
+
     transition(IS_D, {Load, Store, Replacement, Inv}) {
         stall;
     }
@@ -531,16 +555,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         popMandatoryQueue;
     }
 
-    transition(M, Replacement, MI_A) {
-        forwardEviction;
-        sendPutM;
-    }
-
-    transition(M, Inv, MI_A) {
-        forwardEviction;
-        sendPutM;
-    }
-
     transition(M, FwdGetS) {
         sendCacheDataToReq;
         popForwardQueue;
@@ -553,17 +567,22 @@ machine(MachineType:L1Cache, "MSI Cache")
         popForwardQueue;
     }
 
-    transition({MI_A, II_A}, {Load, Store, Replacement}) {
-        stall;
+    /*
+    transition(M, {Replacement, Inv}, MI_A) {
+        forwardEviction;
+        sendPutM;
     }
 
-    transition(MI_A, FwdGetS, II_A) {
+    transition(MI_A, {FwdGetS, FwdGetM}, II_A) {
         sendCacheDataToReq;
         popForwardQueue;
     }
 
-    transition(MI_A, FwdGetM, II_A) {
-        sendCacheDataToReq;
+    transition({MI_A, II_A}, {Load, Store, Replacement}) {
+        stall;
+    }
+
+    transition({MI_A, II_A}, Inv) {
         popForwardQueue;
     }
 
@@ -571,9 +590,52 @@ machine(MachineType:L1Cache, "MSI Cache")
         deallocateCacheBlock;
         popForwardQueue;
     }
+    */
 
-    transition({MI_A, II_A}, Inv) {
+    transition(M, {Replacement, Inv}, MI_A) {
+        allocateTBE;
+        sendPutM;
+        copyDataFromCacheToTBE;
+        forwardEviction;
+        deallocateCacheBlock;
+    }
+
+    transition(MI_A, FwdGetS, MI_A) {
+      sendTBEDataToReq;
+      popForwardQueue;
+    }
+
+    transition(MI_A, PutAck, I) {
+      deallocateTBE;
+      popForwardQueue;
+    }
+
+    transition(MI_A, FwdGetM, II_A) {
+      sendTBEDataToReq;
+      popForwardQueue;
+    }
+
+    transition(MI_A, PutNAck, MII_A) {
+      popForwardQueue;
+    }
+
+    transition(MII_A, FwdGetM, I) {
+      sendTBEDataToReq;
+      deallocateTBE;
+      popForwardQueue;
+    }
+
+    transition(II_A, PutNAck, I) {
+      deallocateTBE;
+      popForwardQueue;
+    }
+
+    transition({MI_A, II_A, MII_A}, {Load, Store, Replacement}) {
         stall;
+    }
+
+    transition(MI_A, Inv) {
+        popForwardQueue;
     }
 
 }
