@@ -212,13 +212,17 @@ def create_system(options, full_system, system, piobus = None, dma_ports = [],
         ruby.phys_mem = SimpleMemory(range=system.mem_ranges[0],
                                      in_addr_map=False)
 
-def create_directories(options, bootmem, ruby_system, system):
+def create_directories(options, bootmem, ruby_system, system,
+                       enable_predictor=False):
     dir_cntrl_nodes = []
+    predictor = RubyPredictor.Predictor()
     for i in range(options.num_dirs):
         dir_cntrl = Directory_Controller()
         dir_cntrl.version = i
         dir_cntrl.directory = RubyDirectoryMemory()
         dir_cntrl.ruby_system = ruby_system
+        dir_cntrl.predictor = predictor
+        dir_cntrl.enable_predictor = enable_predictor
 
         exec("ruby_system.dir_cntrl%d = dir_cntrl" % i)
         dir_cntrl_nodes.append(dir_cntrl)

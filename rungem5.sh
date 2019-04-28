@@ -117,7 +117,7 @@ case "$1" in
 		diskImage="${DIR}/disks/x86root-parsec.img"
 		kernelImage="${DIR}/binaries/vmlinux"
 
-		time build/X86/gem5.opt --debug-flags=ProtocolTrace --debug-file=FILE\
+		time build/X86/gem5.opt\
 			--outdir=${outputDir} --remote-gdb-port=0 configs/example/fs.py\
 			--kernel=${kernelImage} --ruby --num-cpus=8 --caches --l2cache\
 			--disk-image=${diskImage} --script=${script} --cpu-type=TimingSimpleCPU\

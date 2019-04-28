@@ -249,3 +249,7 @@ structure (Prefetcher, external = "yes") {
     void observePfHit(Addr);
     void observePfMiss(Addr);
 }
+
+structure (Predictor, external = "yes") {
+  void observeActivity(Addr, MachineID, CoherenceRequestType, int);
+}

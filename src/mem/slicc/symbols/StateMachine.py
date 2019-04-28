@@ -49,6 +49,7 @@ python_class_map = {
                     "MemoryControl": "MemoryControl",
                     "MessageBuffer": "MessageBuffer",
                     "DMASequencer": "DMASequencer",
+                    "Predictor": "Predictor",
                     "Prefetcher":"Prefetcher",
                     "Cycles":"Cycles",
                    }

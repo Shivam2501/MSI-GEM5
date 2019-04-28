@@ -1,7 +1,10 @@
 machine(MachineType:Directory, "Directory Protocol")
     : DirectoryMemory *directory;
+      Predictor * predictor;
       Cycles directory_latency := 12;
       Cycles toMemLatency := 1;
+
+      bool enable_predictor := "False";
 
       MessageBuffer *forwardToCache, network="To", virtual_network="3",
             vnet_type="forward";
@@ -606,12 +609,31 @@ machine(MachineType:Directory, "Directory Protocol")
         dmaRequest_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
     }
 
+    // Predictor Actions
+
+    action(predictor_observeActivity_write, "\pw", desc="Inform the predictor about the write request") {
+        peek(request_in, RequestMsg) {
+          if (enable_predictor) {
+            predictor.observeActivity(in_msg.addr, in_msg.Requestor, in_msg.Type, 1);
+          }
+        }
+    }
+
+    action(predictor_observeActivity_read, "\pr", desc="Inform the predictor about the read request") {
+        peek(request_in, RequestMsg) {
+          if (enable_predictor) {
+            predictor.observeActivity(in_msg.addr, in_msg.Requestor, in_msg.Type, 0);
+          }
+        }
+    }
+
     transition({S_M, M_M, MI_M}, {PutMOwner, PutMNonOwner}) {
       zz_recycleRequestQueue;
     }
 
     // Transitions
     transition(I, GetS, S_M) {
+        predictor_observeActivity_read;
         sendMemRead;
         popRequestQueue;
     }
@@ -622,6 +644,7 @@ machine(MachineType:Directory, "Directory Protocol")
     }
 
     transition(I, GetM, M_M) {
+        predictor_observeActivity_write;
         sendMemRead;
         setOwner;
         popRequestQueue;
@@ -633,6 +656,7 @@ machine(MachineType:Directory, "Directory Protocol")
     }
 
     transition(M, GetS, S_D) {
+        predictor_observeActivity_read;
         allocateTbeFromRequestNet;
         sendFwdGetS;
         popRequestQueue;
@@ -648,6 +672,7 @@ machine(MachineType:Directory, "Directory Protocol")
     }
 
     transition(M, GetM) {
+        predictor_observeActivity_write;
         sendFwdGetM;
         clearOwner;
         setOwner;

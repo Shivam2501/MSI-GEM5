@@ -39,18 +39,6 @@
  * Authors: Jason Lowe-Power
  */
 
-enumeration(CoherenceRequestType, desc="Types of request messages") {
-    GetS,       desc="Request from cache for a block with read permission";
-    GetM,       desc="Request from cache for a block with write permission";
-    PutS,       desc="Sent to directory when evicting a block in S (clean WB)";
-    PutM,       desc="Sent to directory when evicting a block in M";
-
-    // "Requests" from the directory to the caches on the fwd network
-    Inv,        desc="Probe the cache and invalidate any matching blocks";
-    PutAck,     desc="The put request has been processed.";
-    PutNAck,    desc="The put request from a non-owner acknowledged.";
-}
-
 enumeration(CoherenceResponseType, desc="Types of response messages") {
     Data,       desc="Contains the most up-to-date data";
     Ack,        desc="Message from another cache that asked for shared data";
