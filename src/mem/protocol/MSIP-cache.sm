@@ -363,6 +363,18 @@ machine(MachineType:L1Cache, "MSI Cache")
         }
     }
 
+    action(sendAckToDir, "acD", desc="Send ack to the dir") {
+        enqueue(response_out, ResponseMsg, 1) {
+            out_msg.addr := address;
+            out_msg.Type := CoherenceResponseType:Ack;
+            out_msg.Destination.add(mapAddressToMachine(address,
+                                    MachineType:Directory));
+            out_msg.DataBlk := tbe.DataBlk;
+            out_msg.MessageSize := MessageSizeType:Control;
+            out_msg.Sender := machineID;
+        }
+    }
+
     action(sendInvAcktoReq, "iaR", desc="Send inv-ack to requestor") {
         peek(forward_in, RequestMsg) {
             enqueue(response_out, ResponseMsg, 1) {
@@ -510,11 +522,19 @@ machine(MachineType:L1Cache, "MSI Cache")
         stall;
     }
 
-    transition(IS_D, {DataDirNoAcks, DataOwner}, I) {
+    transition(IS_D, DataDirNoAcks, I) {
         writeDataToTBE;
         externalLoadHit;
         deallocateTBE;
         popResponseQueue;
+    }
+
+    transition(IS_D, DataOwner, I) {
+      writeDataToTBE;
+      externalLoadHit;
+      sendAckToDir;
+      deallocateTBE;
+      popResponseQueue;
     }
 
     transition({IM_AD, IM_A}, {Load, Store, Replacement, FwdGetS, FwdGetM}) {
@@ -567,31 +587,6 @@ machine(MachineType:L1Cache, "MSI Cache")
         popForwardQueue;
     }
 
-    /*
-    transition(M, {Replacement, Inv}, MI_A) {
-        forwardEviction;
-        sendPutM;
-    }
-
-    transition(MI_A, {FwdGetS, FwdGetM}, II_A) {
-        sendCacheDataToReq;
-        popForwardQueue;
-    }
-
-    transition({MI_A, II_A}, {Load, Store, Replacement}) {
-        stall;
-    }
-
-    transition({MI_A, II_A}, Inv) {
-        popForwardQueue;
-    }
-
-    transition({MI_A, II_A}, PutAck, I) {
-        deallocateCacheBlock;
-        popForwardQueue;
-    }
-    */
-
     transition(M, {Replacement, Inv}, MI_A) {
         allocateTBE;
         sendPutM;
@@ -600,7 +595,7 @@ machine(MachineType:L1Cache, "MSI Cache")
         deallocateCacheBlock;
     }
 
-    transition(MI_A, FwdGetS, MI_A) {
+    transition(MI_A, FwdGetS) {
       sendTBEDataToReq;
       popForwardQueue;
     }

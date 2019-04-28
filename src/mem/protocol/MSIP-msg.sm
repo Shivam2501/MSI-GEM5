@@ -53,6 +53,7 @@ enumeration(CoherenceRequestType, desc="Types of request messages") {
 
 enumeration(CoherenceResponseType, desc="Types of response messages") {
     Data,       desc="Contains the most up-to-date data";
+    Ack,        desc="Message from another cache that asked for shared data";
     InvAck,     desc="Message from another cache that they have inv. the blk";
 }
 

@@ -1,5 +1,6 @@
 machine(MachineType:Directory, "Directory Protocol")
     : DirectoryMemory *directory;
+      Cycles directory_latency := 12;
       Cycles toMemLatency := 1;
 
       MessageBuffer *forwardToCache, network="To", virtual_network="3",
@@ -32,6 +33,7 @@ machine(MachineType:Directory, "Directory Protocol")
         // Transient states
 
         // Waiting for data from memory
+        S_D, AccessPermission:Busy,       desc="Moving to M waiting for shared ack";
         S_M, AccessPermission:Read_Write, desc="In S waiting for mem";
         M_M, AccessPermission:Read_Write, desc="Moving to M waiting for mem";
 
@@ -61,6 +63,7 @@ machine(MachineType:Directory, "Directory Protocol")
 
         // Cache responses
         Data,         desc="Response to fwd request with data";
+        Ack,          desc="Shared data received";
 
         // From Memory
         MemData,      desc="Data from memory";
@@ -235,6 +238,8 @@ machine(MachineType:Directory, "Directory Protocol")
                 TBE tbe := TBEs[in_msg.addr];
                 if (in_msg.Type == CoherenceResponseType:Data) {
                     trigger(Event:Data, in_msg.addr, tbe);
+                } else if (in_msg.Type == CoherenceResponseType:Ack) {
+                    trigger(Event:Ack, in_msg.addr, tbe);
                 } else if (in_msg.Type == CoherenceResponseType:InvAck) {
                     if (tbe.AcksOutstanding == 1) {
                         trigger(Event:LastInvAck, in_msg.addr, tbe);
@@ -593,7 +598,7 @@ machine(MachineType:Directory, "Directory Protocol")
         assert(tbe.AcksOutstanding > 0);
     }
 
-    action(zz_recycleRequestQueue, "zR", desc="recycle DMA queue") {
+    action(zz_recycleRequestQueue, "zR", desc="recycle Request queue") {
         request_in.recycle(clockEdge(), cyclesToTicks(recycle_latency));
     }
 
@@ -627,9 +632,19 @@ machine(MachineType:Directory, "Directory Protocol")
         popMemQueue;
     }
 
-    transition(M, GetS) {
+    transition(M, GetS, S_D) {
+        allocateTbeFromRequestNet;
         sendFwdGetS;
         popRequestQueue;
+    }
+
+    transition(S_D, Ack, M) {
+      deallocateTBE;
+      popResponseQueue;
+    }
+
+    transition(S_D, {GetS, GetM, PutMOwner}) {
+      stall;
     }
 
     transition(M, GetM) {
@@ -731,7 +746,7 @@ machine(MachineType:Directory, "Directory Protocol")
         popMemQueue;
     }
 
-    transition({S_M, M_M, MI_M, ID, ID_W}, {DMA_READ, DMA_WRITE}) {
+    transition({S_D, S_M, M_M, MI_M, ID, ID_W}, {DMA_READ, DMA_WRITE}) {
         zz_recycleDMAQueue;
     }
 
