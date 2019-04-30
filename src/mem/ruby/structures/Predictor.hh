@@ -100,8 +100,8 @@ class Predictor : public SimObject
 
         AbstractController *p_controller;
 
-        Stats::Scalar numReads;
-        Stats::Scalar numWrites;
+        Stats::Vector numReads;
+        Stats::Vector numWrites;
 };
 
 #endif // __MEM_RUBY_STRUCTURES_PREDICTOR_HH__

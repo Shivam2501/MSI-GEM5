@@ -33,11 +33,13 @@ Predictor::regStats()
     SimObject::regStats();
 
     numReads
+      .init(p_num_histories)
       .name(name() + ".reads_observed")
       .desc("number of reads observed")
       ;
 
     numWrites
+      .init(p_num_histories)
       .name(name() + ".writes_observed")
       .desc("number of writes observed")
       ;
@@ -69,8 +71,10 @@ Predictor::observeActivity(Addr address, const MachineID& requester,
             entry->h_reads += 1;
         //we don't really need it?
         //cuz we need to allocate new entry for every access?
-        numReads = entry->h_reads;
-        numWrites = entry->h_writes;
+        for (int i = 0; i < p_num_histories; i++) {
+          numReads[i] = entry->h_reads;
+          numWrites[i] = entry->h_writes;
+        }
         return;
     }
 
