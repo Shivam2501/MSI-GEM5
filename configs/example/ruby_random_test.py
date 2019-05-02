@@ -123,7 +123,7 @@ tester.num_cpus = len(system.ruby._cpu_ports)
 # The tester is most effective when randomization is turned on and
 # artifical delay is randomly inserted on messages
 #
-system.ruby.randomization = True
+system.ruby.randomization = False
 
 for ruby_port in system.ruby._cpu_ports:
     #
